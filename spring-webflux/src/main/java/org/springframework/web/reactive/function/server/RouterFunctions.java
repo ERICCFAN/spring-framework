@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2018 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,6 +26,7 @@ import java.util.function.Supplier;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import org.springframework.core.io.Resource;
@@ -36,6 +37,7 @@ import org.springframework.web.reactive.result.view.ViewResolver;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebHandler;
 import org.springframework.web.server.adapter.WebHttpHandlerBuilder;
+import org.springframework.web.util.pattern.PathPatternParser;
 
 /**
  * <strong>Central entry point to Spring's functional web framework.</strong>
@@ -77,8 +79,6 @@ public abstract class RouterFunctions {
 			RouterFunctions.class.getName() + ".matchingPattern";
 
 
-	private static final HandlerFunction<ServerResponse> NOT_FOUND_HANDLER =
-			request -> ServerResponse.notFound().build();
 
 
 	/**
@@ -253,40 +253,27 @@ public abstract class RouterFunctions {
 		Assert.notNull(routerFunction, "RouterFunction must not be null");
 		Assert.notNull(strategies, "HandlerStrategies must not be null");
 
-		return exchange -> {
-			ServerRequest request = new DefaultServerRequest(exchange, strategies.messageReaders());
-			addAttributes(exchange, request);
-			return routerFunction.route(request)
-					.defaultIfEmpty(notFound())
-					.flatMap(handlerFunction -> wrapException(() -> handlerFunction.handle(request)))
-					.flatMap(response -> wrapException(() -> response.writeTo(exchange,
-							new HandlerStrategiesResponseContext(strategies))));
-		};
+		return new RouterFunctionWebHandler(strategies, routerFunction);
 	}
 
+	/**
+	 * Changes the {@link PathPatternParser} on the given {@linkplain RouterFunction router function}. This method
+	 * can be used to change the {@code PathPatternParser} properties from the defaults, for instance to change
+	 * {@linkplain PathPatternParser#setCaseSensitive(boolean) case sensitivity}.
+	 * @param routerFunction the router function to change the parser in
+	 * @param parser the parser to change to.
+	 * @param <T> the type of response returned by the handler function
+	 * @return the change router function
+	 */
+	public static <T extends ServerResponse> RouterFunction<T> changeParser(RouterFunction<T> routerFunction,
+			PathPatternParser parser) {
 
-	private static <T> Mono<T> wrapException(Supplier<Mono<T>> supplier) {
-		try {
-			return supplier.get();
-		}
-		catch (Throwable ex) {
-			return Mono.error(ex);
-		}
-	}
+		Assert.notNull(routerFunction, "RouterFunction must not be null");
+		Assert.notNull(parser, "Parser must not be null");
 
-	private static void addAttributes(ServerWebExchange exchange, ServerRequest request) {
-		Map<String, Object> attributes = exchange.getAttributes();
-		attributes.put(REQUEST_ATTRIBUTE, request);
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T extends ServerResponse> HandlerFunction<T> notFound() {
-		return (HandlerFunction<T>) NOT_FOUND_HANDLER;
-	}
-
-	@SuppressWarnings("unchecked")
-	static <T extends ServerResponse> HandlerFunction<T> cast(HandlerFunction<?> handlerFunction) {
-		return (HandlerFunction<T>) handlerFunction;
+		ChangePathPatternParserVisitor visitor = new ChangePathPatternParserVisitor(parser);
+		routerFunction.accept(visitor);
+		return routerFunction;
 	}
 
 
@@ -298,6 +285,14 @@ public abstract class RouterFunctions {
 	public interface Builder {
 
 		/**
+		 * Adds a route to the given handler function that handles HTTP {@code GET} requests.
+		 * @param handlerFunction the handler function to handle all {@code GET} requests
+		 * @return this builder
+		 * @since 5.3
+		 */
+		Builder GET(HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code GET} requests
 		 * that match the given pattern.
 		 * @param pattern the pattern to match to
@@ -306,6 +301,18 @@ public abstract class RouterFunctions {
 		 * @return this builder
 		 */
 		Builder GET(String pattern, HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
+		 * Adds a route to the given handler function that handles all HTTP {@code GET} requests
+		 * that match the given predicate.
+		 * @param predicate predicate to match
+		 * @param handlerFunction the handler function to handle all {@code GET} requests that
+		 * match {@code predicate}
+		 * @return this builder
+		 * @since 5.3
+		 * @see RequestPredicates
+		 */
+		Builder GET(RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code GET} requests
@@ -321,11 +328,19 @@ public abstract class RouterFunctions {
 		 * @param pattern the pattern to match to
 		 * @param predicate additional predicate to match
 		 * @param handlerFunction the handler function to handle all {@code GET} requests that
-		 * match {@code pattern}
+		 * match {@code pattern} and the predicate
 		 * @return this builder
 		 * @see RequestPredicates
 		 */
 		Builder GET(String pattern, RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
+		 * Adds a route to the given handler function that handles HTTP {@code HEAD} requests.
+		 * @param handlerFunction the handler function to handle all {@code HEAD} requests
+		 * @return this builder
+		 * @since 5.3
+		 */
+		Builder HEAD(HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code HEAD} requests
@@ -339,6 +354,18 @@ public abstract class RouterFunctions {
 
 		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code HEAD} requests
+		 * that match the given predicate.
+		 * @param predicate predicate to match
+		 * @param handlerFunction the handler function to handle all {@code HEAD} requests that
+		 * match {@code predicate}
+		 * @return this builder
+		 * @since 5.3
+		 * @see RequestPredicates
+		 */
+		Builder HEAD(RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
+		 * Adds a route to the given handler function that handles all HTTP {@code HEAD} requests
 		 * that match the given pattern and predicate.
 		 * @param pattern the pattern to match to
 		 * @param predicate additional predicate to match
@@ -349,6 +376,14 @@ public abstract class RouterFunctions {
 		Builder HEAD(String pattern, RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
+		 * Adds a route to the given handler function that handles HTTP {@code POST} requests.
+		 * @param handlerFunction the handler function to handle all {@code POST} requests
+		 * @return this builder
+		 * @since 5.3
+		 */
+		Builder POST(HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code POST} requests
 		 * that match the given pattern.
 		 * @param pattern the pattern to match to
@@ -357,6 +392,18 @@ public abstract class RouterFunctions {
 		 * @return this builder
 		 */
 		Builder POST(String pattern, HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
+		 * Adds a route to the given handler function that handles all HTTP {@code POST} requests
+		 * that match the given predicate.
+		 * @param predicate predicate to match
+		 * @param handlerFunction the handler function to handle all {@code POST} requests that
+		 * match {@code predicate}
+		 * @return this builder
+		 * @since 5.3
+		 * @see RequestPredicates
+		 */
+		Builder POST(RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code POST} requests
@@ -378,6 +425,14 @@ public abstract class RouterFunctions {
 		Builder POST(String pattern, RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
+		 * Adds a route to the given handler function that handles HTTP {@code PUT} requests.
+		 * @param handlerFunction the handler function to handle all {@code PUT} requests
+		 * @return this builder
+		 * @since 5.3
+		 */
+		Builder PUT(HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code PUT} requests
 		 * that match the given pattern.
 		 * @param pattern the pattern to match to
@@ -386,6 +441,18 @@ public abstract class RouterFunctions {
 		 * @return this builder
 		 */
 		Builder PUT(String pattern, HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
+		 * Adds a route to the given handler function that handles all HTTP {@code PUT} requests
+		 * that match the given predicate.
+		 * @param predicate predicate to match
+		 * @param handlerFunction the handler function to handle all {@code PUT} requests that
+		 * match {@code predicate}
+		 * @return this builder
+		 * @since 5.3
+		 * @see RequestPredicates
+		 */
+		Builder PUT(RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code PUT} requests
@@ -407,6 +474,14 @@ public abstract class RouterFunctions {
 		Builder PUT(String pattern, RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
+		 * Adds a route to the given handler function that handles HTTP {@code PATCH} requests.
+		 * @param handlerFunction the handler function to handle all {@code PATCH} requests
+		 * @return this builder
+		 * @since 5.3
+		 */
+		Builder PATCH(HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code PATCH} requests
 		 * that match the given pattern.
 		 * @param pattern the pattern to match to
@@ -415,6 +490,18 @@ public abstract class RouterFunctions {
 		 * @return this builder
 		 */
 		Builder PATCH(String pattern, HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
+		 * Adds a route to the given handler function that handles all HTTP {@code PATCH} requests
+		 * that match the given predicate.
+		 * @param predicate predicate to match
+		 * @param handlerFunction the handler function to handle all {@code PATCH} requests that
+		 * match {@code predicate}
+		 * @return this builder
+		 * @since 5.3
+		 * @see RequestPredicates
+		 */
+		Builder PATCH(RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code PATCH} requests
@@ -436,6 +523,14 @@ public abstract class RouterFunctions {
 		Builder PATCH(String pattern, RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
+		 * Adds a route to the given handler function that handles HTTP {@code DELETE} requests.
+		 * @param handlerFunction the handler function to handle all {@code DELETE} requests
+		 * @return this builder
+		 * @since 5.3
+		 */
+		Builder DELETE(HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code DELETE} requests
 		 * that match the given pattern.
 		 * @param pattern the pattern to match to
@@ -444,6 +539,18 @@ public abstract class RouterFunctions {
 		 * @return this builder
 		 */
 		Builder DELETE(String pattern, HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
+		 * Adds a route to the given handler function that handles all HTTP {@code DELETE} requests
+		 * that match the given predicate.
+		 * @param predicate predicate to match
+		 * @param handlerFunction the handler function to handle all {@code DELETE} requests that
+		 * match {@code predicate}
+		 * @return this builder
+		 * @since 5.3
+		 * @see RequestPredicates
+		 */
+		Builder DELETE(RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code DELETE} requests
@@ -457,6 +564,14 @@ public abstract class RouterFunctions {
 		Builder DELETE(String pattern, RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
+		 * Adds a route to the given handler function that handles HTTP {@code OPTIONS} requests.
+		 * @param handlerFunction the handler function to handle all {@code OPTIONS} requests
+		 * @return this builder
+		 * @since 5.3
+		 */
+		Builder OPTIONS(HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code OPTIONS} requests
 		 * that match the given pattern.
 		 * @param pattern the pattern to match to
@@ -465,6 +580,18 @@ public abstract class RouterFunctions {
 		 * @return this builder
 		 */
 		Builder OPTIONS(String pattern, HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
+		 * Adds a route to the given handler function that handles all HTTP {@code OPTIONS} requests
+		 * that match the given predicate.
+		 * @param predicate predicate to match
+		 * @param handlerFunction the handler function to handle all {@code OPTIONS} requests that
+		 * match {@code predicate}
+		 * @return this builder
+		 * @since 5.3
+		 * @see RequestPredicates
+		 */
+		Builder OPTIONS(RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code OPTIONS} requests
@@ -478,6 +605,17 @@ public abstract class RouterFunctions {
 		Builder OPTIONS(String pattern, RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
+		 * Adds a route to the given handler function that handles all requests that match the
+		 * given predicate.
+		 * @param predicate the request predicate to match
+		 * @param handlerFunction the handler function to handle all requests that match the predicate
+		 * @return this builder
+		 * @since 5.2
+		 * @see RequestPredicates
+		 */
+		Builder route(RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
 		 * Adds the given route to this builder. Can be used to merge externally defined router
 		 * functions into this builder, or can be combined with
 		 * {@link RouterFunctions#route(RequestPredicate, HandlerFunction)}
@@ -486,7 +624,7 @@ public abstract class RouterFunctions {
 		 * {@code OrderController.routerFunction()}.
 		 * to the {@code changeUser} method in {@code userController}:
 		 * <pre class="code">
-		 * RouterFunctionlt;ServerResponsegt; route =
+		 * RouterFunction&lt;ServerResponse&gt; route =
 		 *   RouterFunctions.route()
 		 *     .GET("/users", userController::listUsers)
 		 *     .add(orderController.routerFunction());
@@ -773,7 +911,7 @@ public abstract class RouterFunctions {
 	}
 
 
-	private abstract static class AbstractRouterFunction<T extends ServerResponse> implements RouterFunction<T> {
+	abstract static class AbstractRouterFunction<T extends ServerResponse> implements RouterFunction<T> {
 
 		@Override
 		public String toString() {
@@ -803,8 +941,8 @@ public abstract class RouterFunctions {
 
 		@Override
 		public Mono<HandlerFunction<T>> route(ServerRequest request) {
-			return this.first.route(request)
-					.switchIfEmpty(Mono.defer(() -> this.second.route(request)));
+			return Flux.concat(this.first.route(request), Mono.defer(() -> this.second.route(request)))
+					.next();
 		}
 
 		@Override
@@ -833,9 +971,14 @@ public abstract class RouterFunctions {
 
 		@Override
 		public Mono<HandlerFunction<ServerResponse>> route(ServerRequest request) {
-			return this.first.route(request)
-					.map(RouterFunctions::cast)
-					.switchIfEmpty(Mono.defer(() -> this.second.route(request).map(RouterFunctions::cast)));
+			return Flux.concat(this.first.route(request), Mono.defer(() -> this.second.route(request)))
+					.next()
+					.map(this::cast);
+		}
+
+		@SuppressWarnings("unchecked")
+		private <T extends ServerResponse> HandlerFunction<T> cast(HandlerFunction<?> handlerFunction) {
+			return (HandlerFunction<T>) handlerFunction;
 		}
 
 		@Override
@@ -914,6 +1057,7 @@ public abstract class RouterFunctions {
 		public void accept(Visitor visitor) {
 			visitor.route(this.predicate, this.handlerFunction);
 		}
+
 	}
 
 
@@ -957,6 +1101,7 @@ public abstract class RouterFunctions {
 			this.routerFunction.accept(visitor);
 			visitor.endNested(this.predicate);
 		}
+
 	}
 
 
@@ -1000,4 +1145,51 @@ public abstract class RouterFunctions {
 		}
 	}
 
+
+	private static class RouterFunctionWebHandler implements WebHandler {
+
+		private static final HandlerFunction<ServerResponse> NOT_FOUND_HANDLER =
+				request -> ServerResponse.notFound().build();
+
+		private final HandlerStrategies strategies;
+
+		private final RouterFunction<?> routerFunction;
+
+		public RouterFunctionWebHandler(HandlerStrategies strategies, RouterFunction<?> routerFunction) {
+			this.strategies = strategies;
+			this.routerFunction = routerFunction;
+		}
+
+		@Override
+		public Mono<Void> handle(ServerWebExchange exchange) {
+			return Mono.defer(() -> {
+				ServerRequest request = new DefaultServerRequest(exchange, this.strategies.messageReaders());
+				addAttributes(exchange, request);
+				return this.routerFunction.route(request)
+						.defaultIfEmpty(notFound())
+						.flatMap(handlerFunction -> wrapException(() -> handlerFunction.handle(request)))
+						.flatMap(response -> wrapException(() -> response.writeTo(exchange,
+								new HandlerStrategiesResponseContext(this.strategies))));
+			});
+		}
+
+		private void addAttributes(ServerWebExchange exchange, ServerRequest request) {
+			Map<String, Object> attributes = exchange.getAttributes();
+			attributes.put(REQUEST_ATTRIBUTE, request);
+		}
+
+		@SuppressWarnings("unchecked")
+		private static <T extends ServerResponse> HandlerFunction<T> notFound() {
+			return (HandlerFunction<T>) NOT_FOUND_HANDLER;
+		}
+
+		private static <T> Mono<T> wrapException(Supplier<Mono<T>> supplier) {
+			try {
+				return supplier.get();
+			}
+			catch (Throwable ex) {
+				return Mono.error(ex);
+			}
+		}
+	}
 }

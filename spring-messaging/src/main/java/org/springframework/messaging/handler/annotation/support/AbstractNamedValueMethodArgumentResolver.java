@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,6 +26,7 @@ import org.springframework.beans.factory.config.ConfigurableBeanFactory;
 import org.springframework.core.MethodParameter;
 import org.springframework.core.convert.ConversionService;
 import org.springframework.core.convert.TypeDescriptor;
+import org.springframework.core.convert.support.DefaultConversionService;
 import org.springframework.lang.Nullable;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.handler.annotation.ValueConstants;
@@ -45,7 +46,7 @@ import org.springframework.util.ClassUtils;
  * Expression Language {@code #{...}} expressions which will be resolved if a
  * {@link ConfigurableBeanFactory} is supplied to the class constructor.
  *
- * <p>A {@link ConversionService} is used to to convert resolved String argument
+ * <p>A {@link ConversionService} is used to convert a resolved String argument
  * value to the expected target method parameter type.
  *
  * @author Rossen Stoyanchev
@@ -75,7 +76,13 @@ public abstract class AbstractNamedValueMethodArgumentResolver implements Handle
 	protected AbstractNamedValueMethodArgumentResolver(ConversionService conversionService,
 			@Nullable ConfigurableBeanFactory beanFactory) {
 
-		this.conversionService = conversionService;
+		// Fallback on shared ConversionService for now for historic reasons.
+		// Possibly remove after discussion in gh-23882.
+
+		//noinspection ConstantConditions
+		this.conversionService = (conversionService != null ?
+				conversionService : DefaultConversionService.getSharedInstance());
+
 		this.configurableBeanFactory = beanFactory;
 		this.expressionContext = (beanFactory != null ? new BeanExpressionContext(beanFactory, null) : null);
 	}
@@ -83,7 +90,6 @@ public abstract class AbstractNamedValueMethodArgumentResolver implements Handle
 
 	@Override
 	public Object resolveArgument(MethodParameter parameter, Message<?> message) throws Exception {
-
 		NamedValueInfo namedValueInfo = getNamedValueInfo(parameter);
 		MethodParameter nestedParameter = parameter.nestedIfOptional();
 
@@ -109,6 +115,11 @@ public abstract class AbstractNamedValueMethodArgumentResolver implements Handle
 
 		if (parameter != nestedParameter || !ClassUtils.isAssignableValue(parameter.getParameterType(), arg)) {
 			arg = this.conversionService.convert(arg, TypeDescriptor.forObject(arg), new TypeDescriptor(parameter));
+			// Check for null value after conversion of incoming argument value
+			if (arg == null && namedValueInfo.defaultValue == null &&
+					namedValueInfo.required && !nestedParameter.isOptional()) {
+				handleMissingValue(namedValueInfo.name, nestedParameter, message);
+			}
 		}
 
 		handleResolvedValue(arg, namedValueInfo.name, parameter, message);
@@ -147,10 +158,9 @@ public abstract class AbstractNamedValueMethodArgumentResolver implements Handle
 		if (info.name.isEmpty()) {
 			name = parameter.getParameterName();
 			if (name == null) {
-				Class<?> type = parameter.getParameterType();
 				throw new IllegalArgumentException(
-						"Name for argument of type [" + type.getName() + "] not specified, " +
-								"and parameter name information not found in class file either.");
+						"Name for argument of type [" + parameter.getNestedParameterType().getName() +
+						"] not specified, and parameter name information not found in class file either.");
 			}
 		}
 		return new NamedValueInfo(name, info.required,

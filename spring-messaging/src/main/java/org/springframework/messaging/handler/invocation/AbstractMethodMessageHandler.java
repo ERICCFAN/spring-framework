@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -109,7 +109,7 @@ public abstract class AbstractMethodMessageHandler<T>
 
 	private final Map<T, HandlerMethod> handlerMethods = new LinkedHashMap<>(64);
 
-	private final MultiValueMap<String, T> destinationLookup = new LinkedMultiValueMap<>(64);
+	private final MultiValueMap<String, T> destinationLookup = new LinkedMultiValueMap<>(48);
 
 	private final Map<Class<?>, AbstractExceptionHandlerMethodResolver> exceptionHandlerCache =
 			new ConcurrentHashMap<>(64);
@@ -640,9 +640,10 @@ public abstract class AbstractMethodMessageHandler<T>
 		if (method != null) {
 			return new InvocableHandlerMethod(handlerMethod.getBean(), method);
 		}
-		for (MessagingAdviceBean advice : this.exceptionHandlerAdviceCache.keySet()) {
+		for (Map.Entry<MessagingAdviceBean, AbstractExceptionHandlerMethodResolver> entry : this.exceptionHandlerAdviceCache.entrySet()) {
+			MessagingAdviceBean advice = entry.getKey();
 			if (advice.isApplicableToBeanType(beanType)) {
-				resolver = this.exceptionHandlerAdviceCache.get(advice);
+				resolver = entry.getValue();
 				method = resolver.resolveMethod(exception);
 				if (method != null) {
 					return new InvocableHandlerMethod(advice.resolveBean(), method);
